@@ -152,6 +152,26 @@ def batched_rotary_embedding(positions: torch.Tensor, query: torch.Tensor,
                                           cos_sin_cache, is_neox, rot_dim,
                                           cos_sin_cache_offsets)
 
+# penalty ops
+
+def batch_apply_penalty(input_logits: torch.Tensor, output_logits: torch.Tensor,
+            max_seq_len: int, vocab_size:int,
+            penalty_workspace: torch.Tensor, penalty_workspace_prev: torch.Tensor,
+            temperatures: torch.Tensor, repetition_penalties: torch.Tensor,
+            presence_penalties: torch.Tensor, frequency_penalties: torch.Tensor,
+            output_Ids: torch.Tensor, parent_Ids: torch.Tensor,
+            input_lengths: torch.Tensor, sequence_lengths: torch.Tensor,
+            tokens_per_step: torch.Tensor, batch_size:int,
+            beam_width:int, maxtokens_per_step:int) -> None:
+    torch.ops._C.batch_apply_penalty(input_logits, output_logits,
+                    max_seq_len, vocab_size,
+                    penalty_workspace, penalty_workspace_prev,
+                    temperatures, repetition_penalties,
+                    presence_penalties, frequency_penalties,
+                    output_Ids, parent_Ids,
+                    input_lengths, sequence_lengths,
+                    tokens_per_step, batch_size,
+                    beam_width, maxtokens_per_step)
 
 # layer norm ops
 def rms_norm(out: torch.Tensor, input: torch.Tensor, weight: torch.Tensor,

@@ -18,6 +18,19 @@
 TORCH_LIBRARY_EXPAND(TORCH_EXTENSION_NAME, ops) {
   // vLLM custom ops
 
+  // Penalty ops
+  ops.def(
+      "batch_apply_penalty(Tensor! input_logits, Tensor output_logits,"
+      "  int max_seq_len, int vocab_size,"
+      "  Tensor penalty_workspace, Tensor penalty_workspace_prev,"
+      "  Tensor temperatures, Tensor repetition_penalties,"
+      "  Tensor presence_penalties, Tensor frequency_penalties,"
+      "  Tensor output_Ids, Tensor parent_Ids,"
+      "  Tensor input_lengths, Tensor sequence_lengths,"
+      "  Tensor tokens_per_step, int const batch_size,"
+      "  int const beam_width, int const maxtokens_per_step) -> ()");
+  ops.impl("batch_apply_penalty", torch::kCUDA, &batch_apply_penalty);
+  
   // Attention ops
   // Compute the attention between an input query and the cached
   // keys/values using PagedAttention.

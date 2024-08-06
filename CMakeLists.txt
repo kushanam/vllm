@@ -185,6 +185,7 @@ set(VLLM_EXT_SRC
   "csrc/cuda_utils_kernels.cu"
   "csrc/moe_align_block_size_kernels.cu"
   "csrc/prepare_inputs/advance_step.cu"
+  "csrc/penaltyKernels.cu"
   "csrc/torch_bindings.cpp")
 
 if(VLLM_GPU_LANG STREQUAL "CUDA")
