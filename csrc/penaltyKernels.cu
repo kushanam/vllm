@@ -26,44 +26,107 @@
 #include "dispatch_utils.h"
 
 
-void batch_apply_penalty(
+namespace vllm
+{
+
+template <typename scalar_t>
+__global__ void batchApplyPenaltyKernel(scalar_t* input_logits, scalar_t* output_logits,
+    std::int32_t max_seq_len, std::int32_t vocab_size,
+    float const* temperatures,
+    float const* repetition_penalties, float const* presence_penalties, float const* frequency_penalties,
+    std::int32_t const* sequence_lengths)
+{
+    auto const inLogitsPtr = input_logits +  blockIdx.x * vocab_size;
+    auto outLogitsPtr = output_logits + blockIdx.x * vocab_size;
+    const scalar_t MASK_VAL = (std::is_same<scalar_t, half>::value) ? -HALF_FLT_MAX : -FLT_MAX;
+    float invTemperature, repetition_penalty, presence_penalty, frequency_penalty;
+    if (temperatures != nullptr)
+    {
+        invTemperature = 1.0f / (temperatures[batchSlot] + 1e-6f);
+    }
+    if (repetition_penalties != nullptr)
+    {
+        repetition_penalty = repetition_penalties[batchSlot];
+    }
+    if (presence_penalties != nullptr)
+    {
+        presence_penalty = presence_penalties[batchSlot];
+    }
+    if (frequency_penalties != nullptr)
+    {
+        frequency_penalty = frequency_penalties[batchSlot];
+    }
+    for (auto index = static_cast<std::int32_t>(threadIdx.x); index < vocab_size;
+         index += static_cast<std::int32_t>(blockDim.x))
+    {
+        if (index < vocab_size)
+        {
+            auto logit = static_cast<float>(inLogitsPtr[index]);
+
+            // Temperature
+            if (temperatures != nullptr)
+            {
+                logit *= invTemperature;
+            }
+
+            // Repetition
+            if (repetition_penalties != nullptr)
+            {
+                logit = logit < 0.0f ? logit * repetition_penalty : logit / repetition_penalty;
+            }
+            // Presence
+            if (presence_penalties != nullptr)
+            {
+                logit -= presence_penalty;
+            }
+            // Frequency
+            if (frequency_penalties != nullptr)
+            {
+                logit -= frequency_penalty * numOccurences;
+            }
+
+            outLogitsPtr[index] = logit;
+        }
+        else
+        {
+            outLogitsPtr[index] = MASK_VAL;
+        }
+    }
+}
+
+}
+#define LAUNCH_PENALTY_KERNEL()                                                           \
+  dim3 block(256);                                                                        \
+  dim3 grid(batch_size, 1, 1);                                                            \
+  const c10::cuda::OptionalCUDAGuard device_guard(device_of(input_logits));               \
+  auto stream = c10::cuda::getCurrentCUDAStream().stream();                               \                     
+  VLLM_DISPATCH_FLOATING_TYPES(                                                           \
+    input_logits.scalar_type(),                                                           \
+    "batchApplyPenaltyKernel",                                                                 \
+    [&] {                                                                                      \
+      vllm::batchApplyPenaltyKernel<scalar_t><<<grid, block, 0, stream>>>(                     \
+        input_logits.data_ptr<scalar_t>(),                                                      \
+        output_logits.data_ptr<scalar_t>(),                                                     \
+        batch_size, vocab_size,                                                 \
+        temperatures.data_ptr<float>(),                                  \
+        repetition_penalties.data_ptr<float>(),                   \
+        presence_penalties.data_ptr<float>(),                  \
+        frequency_penalties.data_ptr<float>(),          \
+        sequence_lengths.data_ptr<std::int32_t>() );                                              \
+    });
+
+
+void batchApplyPenalty(
     torch::Tensor& input_logits,      
     torch::Tensor&  output_logits,
-    std::int32_t max_seq_len, std::int32_t vocab_size,
-    torch::Tensor& penalty_workspace, torch::Tensor& penalty_workspace_prev, torch::Tensor& temperatures,
-    torch::Tensor& repetition_penalties, torch::Tensor& presence_penalties, torch::Tensor& frequency_penalties,
-    torch::Tensor& output_Ids, torch::Tensor& parent_Ids, torch::Tensor& input_lengths,
-    torch::Tensor& sequence_lengths, 
-    torch::Tensor& tokens_per_step,
-    std::int32_t const batch_size, std::int32_t const beam_width, std::int32_t const maxtokens_per_step)
+    std::int32_t const batch_size, std::int32_t vocab_size,
+    float const* temperatures,
+    float const* repetition_penalties, float const* presence_penalties, float const* frequency_penalties,
+    std::int32_t const* sequence_lengths)   
 {
-  CUmodule cuModule;
-  cuModuleLoad(&cuModule, "penaltyKernels.cubin");
-  CUfunction penaltyFunc;
-  cuModuleGetFunction(&penaltyFunc, cuModule, "batchApplyPenaltyKernel");
-  void* args[] = {&input_logits.data_ptr<scalar_t>(),
-        &output_logits.data_ptr<scalar_t>(),
-        &max_seq_len,
-        &vocab_size,
-        &penalty_workspace.data_ptr<int>(), 
-        &penalty_workspace_prev.data_ptr<int>(), 
-        &temperatures.data_ptr<float>(),
-        &repetition_penalties.data_ptr<float>(),
-        &presence_penalties.data_ptr<float>(), 
-        &frequency_penalties.data_ptr<float>(),
-        &output_Ids.data_ptr<int>(),
-        &parent_Ids.data_ptr<int>(), 
-        &input_lengths.data_ptr<int>(),
-        &sequence_lengths.data_ptr<int>(),
-        &tokens_per_step.data_ptr<int>())
-         };
-  dim3 block(256);
-  const c10::cuda::OptionalCUDAGuard device_guard(device_of(input_logits));
-  auto stream = c10::cuda::getCurrentCUDAStream().stream();
-  cuLaunchKernel(cuFunction,
-                             batch_size, 1, 1,
-                             beam_width, 1, 1,
-                             0, 0, args, 0);
-  CUDA_CALL(cuModuleUnload(cuModule));
+  LAUNCH_PENALTY_KERNEL();
 }
+
+
+
 

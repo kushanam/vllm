@@ -26,6 +26,13 @@ void paged_attention_v2(
     const int64_t blocksparse_vert_stride, const int64_t blocksparse_block_size,
     const int64_t blocksparse_head_sliding_step);
 
+void batch_apply_penalty(
+    torch::Tensor& input_logits, torch::Tensor& output_logits,
+    const int64_t const batch_size, const int64_t vocab_size,
+    torch::Tensor& temperatures, torch::Tensor& repetition_penalties,
+    torch::Tensor& presence_penalties, torch::Tensor& frequency_penalties,
+    torch::Tensor& sequence_lengths);
+    
 void rms_norm(torch::Tensor& out, torch::Tensor& input, torch::Tensor& weight,
               double epsilon);
 
@@ -135,16 +142,6 @@ torch::Tensor marlin_qqq_gemm(torch::Tensor const& a,
                               torch::Tensor const& s_group,
                               torch::Tensor& workspace, int64_t size_m,
                               int64_t size_n, int64_t size_k);
-void batch_apply_penalty(
-    torch::Tensor& input_logits, torch::Tensor& output_logits,
-    std::int32_t max_seq_len, std::int32_t vocab_size,
-    torch::Tensor& penalty_workspace, torch::Tensor& penalty_workspace_prev,
-    torch::Tensor& temperatures, torch::Tensor& repetition_penalties,
-    torch::Tensor& presence_penalties, torch::Tensor& frequency_penalties,
-    torch::Tensor& output_Ids, torch::Tensor& parent_Ids,
-    torch::Tensor& input_lengths, torch::Tensor& sequence_lengths,
-    torch::Tensor& tokens_per_step, std::int32_t const batch_size,
-    std::int32_t const beam_width, std::int32_t const maxtokens_per_step);
 #endif
 
 void static_scaled_int8_quant(torch::Tensor& out, torch::Tensor const& input,
