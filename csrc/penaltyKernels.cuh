@@ -21,10 +21,10 @@
 void batch_apply_penalty(
     torch::Tensor& input_logits,      
     torch::Tensor&  output_logits,
-    std::int32_t max_seq_len, std::int32_t vocab_size,
-    torch::Tensor& penalty_workspace, torch::Tensor& penalty_workspace_prev, torch::Tensor& temperatures,
-    torch::Tensor& repetition_penalties, torch::Tensor& presence_penalties, torch::Tensor& frequency_penalties,
-    torch::Tensor& output_Ids, torch::Tensor& parent_Ids, torch::Tensor& input_lengths,
-    torch::Tensor& sequence_lengths, 
-    torch::Tensor& tokens_per_step,
-    std::int32_t const batch_size, std::int32_t const beam_width, std::int32_t const maxtokens_per_step)
+    std::int32_t const batch_size, std::int32_t vocab_size, std::int32_t max_seq_len,
+    torch::Tensor&  penalty_workspace,
+    torch::Tensor& temperatures, torch::Tensor& repetition_penalties,
+    torch::Tensor& presence_penalties, torch::Tensor& frequency_penalties,
+    torch::Tensor&  output_ids,
+    torch::Tensor& sequence_lengths,
+    torch::Tensor& aggregate_lengths);

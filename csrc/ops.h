@@ -27,12 +27,16 @@ void paged_attention_v2(
     const int64_t blocksparse_head_sliding_step);
 
 void batch_apply_penalty(
-    torch::Tensor& input_logits, torch::Tensor& output_logits,
-    const int64_t const batch_size, const int64_t vocab_size,
+    torch::Tensor& input_logits,      
+    torch::Tensor&  output_logits,
+    std::int32_t const batch_size, std::int32_t vocab_size, std::int32_t max_seq_len,
+    torch::Tensor&  penalty_workspace,
     torch::Tensor& temperatures, torch::Tensor& repetition_penalties,
     torch::Tensor& presence_penalties, torch::Tensor& frequency_penalties,
-    torch::Tensor& sequence_lengths);
-    
+    torch::Tensor&  output_ids,
+    torch::Tensor& sequence_lengths,
+    torch::Tensor& aggregate_lengths);
+
 void rms_norm(torch::Tensor& out, torch::Tensor& input, torch::Tensor& weight,
               double epsilon);
 

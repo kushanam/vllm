@@ -21,12 +21,14 @@ TORCH_LIBRARY_EXPAND(TORCH_EXTENSION_NAME, ops) {
   // Penalty ops
   ops.def(
       "batch_apply_penalty(Tensor! input_logits, Tensor output_logits,"
-      "  int batch_size, int vocab_size,"
+      "  int batch_size, int vocab_size, int max_seq_len,"
+      "  Tensor penalty_workspace,"
       "  Tensor temperatures, Tensor repetition_penalties,"
       "  Tensor presence_penalties, Tensor frequency_penalties,"
-      "  Tensor sequence_lengths) -> ()");
+      "  Tensor output_ids, Tensor  sequence_lengths,"
+      "  Tensor aggregate_lengths) -> ()");
   ops.impl("batch_apply_penalty", torch::kCUDA, &batch_apply_penalty);
-  
+
   // Attention ops
   // Compute the attention between an input query and the cached
   // keys/values using PagedAttention.

@@ -28,40 +28,81 @@
 
 namespace vllm
 {
-
+constexpr float HALF_MAX = 65504.f;
 template <typename scalar_t>
 __global__ void batchApplyPenaltyKernel(scalar_t* input_logits, scalar_t* output_logits,
-    std::int32_t max_seq_len, std::int32_t vocab_size,
+    std::int32_t batch_size, std::int32_t vocab_size, std::int32_t max_seq_len,
+    std::int32_t* penalty_workspace,
     float const* temperatures,
     float const* repetition_penalties, float const* presence_penalties, float const* frequency_penalties,
-    std::int32_t const* sequence_lengths)
+    std::int32_t const* output_ids,
+    std::int32_t const* sequence_lengths,
+    std::int32_t const* aggregate_lengths)
 {
-    auto const inLogitsPtr = input_logits +  blockIdx.x * vocab_size;
+    int32_t batch_pos = blockIdx.x;
+    auto const in_logits_ptr = input_logits +  blockIdx.x * vocab_size;
     auto outLogitsPtr = output_logits + blockIdx.x * vocab_size;
-    const scalar_t MASK_VAL = (std::is_same<scalar_t, half>::value) ? -HALF_FLT_MAX : -FLT_MAX;
+    const scalar_t MASK_VAL = (std::is_same<scalar_t, half>::value) ? -HALF_MAX : -FLT_MAX;
     float invTemperature, repetition_penalty, presence_penalty, frequency_penalty;
+
+    auto const input_len = sequence_lengths[ç];
+    auto const current_step = aggregate_lengths[batch_pos];
+
+    penalty_workspace += batch_pos * vocab_size;
+    if (current_step <= input_len)
+    { // Context phase
+        for (auto index = static_cast<std::int32_t>(threadIdx.x); index < vocab_size;
+                index += static_cast<std::int32_t>(blockDim.x))
+        {
+            penalty_workspace[index] = 0;
+        }
+        __syncthreads();
+        for (auto step = static_cast<std::int32_t>(threadIdx.x); step < input_len;
+                step += static_cast<std::int32_t>(blockDim.x))
+        {
+            auto penalty_index = output_idsPtr[batch_pos * max_seq_len + step];
+            if (penalty_index < vocab_size)
+            {
+                atomicAdd(&penalty_workspace[penalty_index], 1);
+            }
+        }
+    }
+    else
+    { // Generation phase
+
+        if (threadIdx.x == 0)
+        {
+            auto penalty_index = output_idsPtr[batch_pos * max_seq_len + current_step - 1];
+            if (penalty_index < vocab_size)
+            {
+                penalty_workspace[penalty_index] += 1;
+            }
+        }
+    }
+    __syncthreads();
+
     if (temperatures != nullptr)
     {
-        invTemperature = 1.0f / (temperatures[batchSlot] + 1e-6f);
+        invTemperature = 1.0f / (temperatures[batch_pos] + 1e-6f);
     }
     if (repetition_penalties != nullptr)
     {
-        repetition_penalty = repetition_penalties[batchSlot];
+        repetition_penalty = repetition_penalties[batch_pos];
     }
     if (presence_penalties != nullptr)
     {
-        presence_penalty = presence_penalties[batchSlot];
+        presence_penalty = presence_penalties[batch_pos];
     }
     if (frequency_penalties != nullptr)
     {
-        frequency_penalty = frequency_penalties[batchSlot];
+        frequency_penalty = frequency_penalties[batch_pos];
     }
     for (auto index = static_cast<std::int32_t>(threadIdx.x); index < vocab_size;
          index += static_cast<std::int32_t>(blockDim.x))
     {
         if (index < vocab_size)
         {
-            auto logit = static_cast<float>(inLogitsPtr[index]);
+            auto logit = static_cast<float>(in_logits_ptr[index]);
 
             // Temperature
             if (temperatures != nullptr)
@@ -102,31 +143,36 @@ __global__ void batchApplyPenaltyKernel(scalar_t* input_logits, scalar_t* output
   auto stream = c10::cuda::getCurrentCUDAStream().stream();                               \                     
   VLLM_DISPATCH_FLOATING_TYPES(                                                           \
     input_logits.scalar_type(),                                                           \
-    "batchApplyPenaltyKernel",                                                                 \
-    [&] {                                                                                      \
-      vllm::batchApplyPenaltyKernel<scalar_t><<<grid, block, 0, stream>>>(                     \
-        input_logits.data_ptr<scalar_t>(),                                                      \
-        output_logits.data_ptr<scalar_t>(),                                                     \
-        batch_size, vocab_size,                                                 \
-        temperatures.data_ptr<float>(),                                  \
-        repetition_penalties.data_ptr<float>(),                   \
-        presence_penalties.data_ptr<float>(),                  \
-        frequency_penalties.data_ptr<float>(),          \
-        sequence_lengths.data_ptr<std::int32_t>() );                                              \
+    "batchApplyPenaltyKernel",                                                            \
+    [&] {                                                                                 \
+      vllm::batchApplyPenaltyKernel<scalar_t><<<grid, block, 0, stream>>>(                \
+        input_logits.data_ptr<scalar_t>(),                                                \
+        output_logits.data_ptr<scalar_t>(),                                               \
+        batch_size, vocab_size, max_seq_len,                                              \
+        penalty_workspace.data_ptr<std::int32_t>(),                                       \
+        temperatures.data_ptr<float>(),                                                   \
+        repetition_penalties.data_ptr<float>(),                                           \
+        presence_penalties.data_ptr<float>(),                                             \
+        frequency_penalties.data_ptr<float>(),                                            \
+        output_ids.data_ptr<std::int32_t>(),                                              \
+        sequence_lengths.data_ptr<std::int32_t>()                                         \
+        aggregate_lengths.data_ptr<std::int32_t>());                                      \
     });
 
 
-void batchApplyPenalty(
+void batch_apply_penalty(
     torch::Tensor& input_logits,      
     torch::Tensor&  output_logits,
-    std::int32_t const batch_size, std::int32_t vocab_size,
-    float const* temperatures,
-    float const* repetition_penalties, float const* presence_penalties, float const* frequency_penalties,
-    std::int32_t const* sequence_lengths)   
+    std::int32_t const batch_size, std::int32_t vocab_size, std::int32_t max_seq_len,
+    torch::Tensor&  penalty_workspace,
+    torch::Tensor& temperatures, torch::Tensor& repetition_penalties,
+    torch::Tensor& presence_penalties, torch::Tensor& frequency_penalties,
+    torch::Tensor&  output_ids,
+    torch::Tensor& sequence_lengths,
+    torch::Tensor& aggregate_lengths)   
 {
   LAUNCH_PENALTY_KERNEL();
 }
-
 
 
 
