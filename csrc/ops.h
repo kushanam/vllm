@@ -29,7 +29,7 @@ void paged_attention_v2(
 void batch_apply_penalty(
     torch::Tensor& input_logits,      
     torch::Tensor&  output_logits,
-    std::int32_t const batch_size, std::int32_t vocab_size, std::int32_t max_seq_len,
+    std::int64_t const batch_size, std::int64_t vocab_size, std::int64_t max_seq_len,
     torch::Tensor&  penalty_workspace,
     torch::Tensor& temperatures, torch::Tensor& repetition_penalties,
     torch::Tensor& presence_penalties, torch::Tensor& frequency_penalties,

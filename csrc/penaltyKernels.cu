@@ -41,11 +41,11 @@ __global__ void batchApplyPenaltyKernel(scalar_t* input_logits, scalar_t* output
 {
     int32_t batch_pos = blockIdx.x;
     auto const in_logits_ptr = input_logits +  blockIdx.x * vocab_size;
-    auto outLogitsPtr = output_logits + blockIdx.x * vocab_size;
+    auto out_logits_ptr = output_logits + blockIdx.x * vocab_size;
     const scalar_t MASK_VAL = (std::is_same<scalar_t, half>::value) ? -HALF_MAX : -FLT_MAX;
     float invTemperature, repetition_penalty, presence_penalty, frequency_penalty;
 
-    auto const input_len = sequence_lengths[ç];
+    auto const input_len = sequence_lengths[batch_pos];
     auto const current_step = aggregate_lengths[batch_pos];
 
     penalty_workspace += batch_pos * vocab_size;
@@ -60,7 +60,7 @@ __global__ void batchApplyPenaltyKernel(scalar_t* input_logits, scalar_t* output
         for (auto step = static_cast<std::int32_t>(threadIdx.x); step < input_len;
                 step += static_cast<std::int32_t>(blockDim.x))
         {
-            auto penalty_index = output_idsPtr[batch_pos * max_seq_len + step];
+            auto penalty_index = output_ids[batch_pos * max_seq_len + step];
             if (penalty_index < vocab_size)
             {
                 atomicAdd(&penalty_workspace[penalty_index], 1);
@@ -72,7 +72,7 @@ __global__ void batchApplyPenaltyKernel(scalar_t* input_logits, scalar_t* output
 
         if (threadIdx.x == 0)
         {
-            auto penalty_index = output_idsPtr[batch_pos * max_seq_len + current_step - 1];
+            auto penalty_index = output_ids[batch_pos * max_seq_len + current_step - 1];
             if (penalty_index < vocab_size)
             {
                 penalty_workspace[penalty_index] += 1;
@@ -109,28 +109,30 @@ __global__ void batchApplyPenaltyKernel(scalar_t* input_logits, scalar_t* output
             {
                 logit *= invTemperature;
             }
-
-            // Repetition
-            if (repetition_penalties != nullptr)
+            std::int32_t num_occurences = penalty_workspace[index];
+            if (num_occurences > 0)
             {
-                logit = logit < 0.0f ? logit * repetition_penalty : logit / repetition_penalty;
+                // Repetition
+                if (repetition_penalties != nullptr)
+                {
+                    logit = logit < 0.0f ? logit * repetition_penalty : logit / repetition_penalty;
+                }
+                // Presence
+                if (presence_penalties != nullptr)
+                {
+                    logit -= presence_penalty;
+                }
+                // Frequency
+                if (frequency_penalties != nullptr)
+                {
+                    logit -= frequency_penalty * num_occurences;
+                }
             }
-            // Presence
-            if (presence_penalties != nullptr)
-            {
-                logit -= presence_penalty;
-            }
-            // Frequency
-            if (frequency_penalties != nullptr)
-            {
-                logit -= frequency_penalty * numOccurences;
-            }
-
-            outLogitsPtr[index] = logit;
+            out_logits_ptr[index] = logit;
         }
         else
         {
-            outLogitsPtr[index] = MASK_VAL;
+            out_logits_ptr[index] = MASK_VAL;
         }
     }
 }
@@ -140,7 +142,7 @@ __global__ void batchApplyPenaltyKernel(scalar_t* input_logits, scalar_t* output
   dim3 block(256);                                                                        \
   dim3 grid(batch_size, 1, 1);                                                            \
   const c10::cuda::OptionalCUDAGuard device_guard(device_of(input_logits));               \
-  auto stream = c10::cuda::getCurrentCUDAStream().stream();                               \                     
+  auto stream = c10::cuda::getCurrentCUDAStream().stream();                               \
   VLLM_DISPATCH_FLOATING_TYPES(                                                           \
     input_logits.scalar_type(),                                                           \
     "batchApplyPenaltyKernel",                                                            \
@@ -155,7 +157,7 @@ __global__ void batchApplyPenaltyKernel(scalar_t* input_logits, scalar_t* output
         presence_penalties.data_ptr<float>(),                                             \
         frequency_penalties.data_ptr<float>(),                                            \
         output_ids.data_ptr<std::int32_t>(),                                              \
-        sequence_lengths.data_ptr<std::int32_t>()                                         \
+        sequence_lengths.data_ptr<std::int32_t>(),                                        \
         aggregate_lengths.data_ptr<std::int32_t>());                                      \
     });
 
