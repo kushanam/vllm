@@ -268,13 +268,11 @@ class FlashInferMetadata(AttentionMetadata):
     # [0, 3, 6, 8]
     # The indptr of the paged kv cache, shape: [batch_size + 1]
     paged_kv_indptr: Optional[torch.Tensor] = None
-    paged_kv_indptr_cpu: Optional[torch.Tensor] = None
     # The page indices of the paged kv cache
     paged_kv_indices: Optional[torch.Tensor] = None
     # The number of entries in the last page of each request in
     # the paged kv cache, shape: [batch_size]
     paged_kv_last_page_len: Optional[torch.Tensor] = None
-    paged_kv_last_page_len_cpu: Optional[torch.Tensor] = None
     # The number of query/output heads
     num_qo_heads: Optional[int] = None
     # The number of key/value heads
@@ -327,16 +325,16 @@ class FlashInferMetadata(AttentionMetadata):
                     self.num_qo_heads, self.num_kv_heads, self.head_dim,
                     self.page_size)
         else:
-            if not self.use_cuda_graph:
-                assert self.paged_kv_indices is not None
-                assert self.paged_kv_indptr is not None
-                assert self.paged_kv_last_page_len is not None
-                self.paged_kv_indices = self.paged_kv_indices.to(self.device)
-                self.paged_kv_indptr = self.paged_kv_indptr.to(self.device)
-                self.paged_kv_last_page_len = self.paged_kv_last_page_len.to(
-                    self.device)
-                self.block_table_bound = self.block_table_bound.to(self.device)
-                self.seq_lens_tensor = self.seq_lens_tensor.to(self.device)
+            #if not self.use_cuda_graph:
+            assert self.paged_kv_indices is not None
+            assert self.paged_kv_indptr is not None
+            assert self.paged_kv_last_page_len is not None
+            self.paged_kv_indices = self.paged_kv_indices.to(self.device)
+            self.paged_kv_indptr = self.paged_kv_indptr.to(self.device)
+            self.paged_kv_last_page_len = self.paged_kv_last_page_len.to(
+                self.device)
+            self.block_table_bound = self.block_table_bound.to(self.device)
+            self.seq_lens_tensor = self.seq_lens_tensor.to(self.device)
 
             assert self.decode_wrapper is not None
             self.decode_wrapper.end_forward()
@@ -418,7 +416,7 @@ class FlashInferMetadataBuilder(AttentionMetadataBuilder[FlashInferMetadata]):
         self.paged_kv_indptr: List[int] = [0]
         # paged_kv_last_page_len is the length of the last page of each request
         self.paged_kv_last_page_len: List[int] = []
-
+        self.total_blocks = 0
         self.is_profile_run: bool = False
 
     def _add_seq_group(
@@ -489,6 +487,7 @@ class FlashInferMetadataBuilder(AttentionMetadataBuilder[FlashInferMetadata]):
         # block_table_bound is 1 with 1 valid block.
         # If seq_len = 15, block_size = 16,
         # block_table_bound is 0 + 1 with 1 valid block.
+        self.total_blocks += len(block_table)
         block_table_bound = seq_len // self.block_size + 1 \
                             if seq_len % self.block_size != 0 \
                             else seq_len // self.block_size
@@ -525,7 +524,7 @@ class FlashInferMetadataBuilder(AttentionMetadataBuilder[FlashInferMetadata]):
 
         if use_captured_graph:
             self.slot_mapping.extend([PAD_SLOT_ID] * cuda_graph_pad_size)
-            self.block_tables.extend([] * cuda_graph_pad_size)
+            self.block_tables.extend([] for _ in  range(cuda_graph_pad_size))
             num_decode_tokens = batch_size
 
             # The shape of graph_block_tables is
@@ -573,6 +572,10 @@ class FlashInferMetadataBuilder(AttentionMetadataBuilder[FlashInferMetadata]):
                      out=query_start_loc[1:])
 
         if len(self.paged_kv_indptr) > 0:
+            # extend to the maximum number of blocks as returned by the
+            # scheduler
+            self.paged_kv_indices.extend([0] *
+                        (self.total_blocks - len(self.paged_kv_indices)))
             paged_kv_indices_tensor = torch.tensor(self.paged_kv_indices,
                                                    device="cpu",
                                                    dtype=torch.int)
