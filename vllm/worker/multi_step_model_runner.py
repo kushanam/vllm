@@ -268,14 +268,17 @@ class MultiStepModelRunner(GPUModelRunnerBase[StatefulModelInput]):
             # might clobber enqueued forwards. (prevents CPU from running too
             # far ahead if needed)
             model_input.wait_previous_step()
+            torch.cuda.synchronize()
             model_input = self._advance_step(
                 model_input, model_input.cached_outputs[-1].sampler_output)
+            torch.cuda.synchronize()
 
         # Execute the model
         output = self._base_model_runner.execute_model(frozen_model_input,
                                                        kv_caches,
                                                        intermediate_tensors,
                                                        num_steps=1)
+        torch.cuda.synchronize()
 
         # record the event for the current step so that the next step can sync
         model_input.record_step_event(current_stream)
@@ -345,7 +348,7 @@ class MultiStepModelRunner(GPUModelRunnerBase[StatefulModelInput]):
             assert seq_group.seq_len is None  # Decode
             assert seq_group.query_len is None  # Decode
 
-    def _advance_step(self, model_input: StatefulModelInput,
+    def _advance_step_flashattn(self, model_input: StatefulModelInput,
                       out: SamplerOutput) -> StatefulModelInput:
         frozen_model_input = model_input.frozen_model_input
         assert frozen_model_input is not None
@@ -378,6 +381,162 @@ class MultiStepModelRunner(GPUModelRunnerBase[StatefulModelInput]):
                 frozen_model_input.seq_lens[i] = attn_metadata.seq_lens[i]
 
         return model_input
+    
+    def _advance_step_flashinfer(
+        self,
+        model_input: StatefulModelInput,
+        out: SamplerOutput,
+    ) -> StatefulModelInput:
+        """Advance the model input for the next step."""
+        # Append the output token to the sequence data.
+        frozen_model_input = model_input.frozen_model_input
+        assert frozen_model_input is not None
+        assert frozen_model_input.attn_metadata is not None
+        attn_metadata = frozen_model_input.attn_metadata
+        # assert isinstance(attn_metadata, FlashInferMetadata)
+        num_seqs = model_input.num_seqs
+        num_queries = model_input.num_queries
+
+        sampled_tokens = model_input.cached_outputs[-1].sampled_token_ids
+        frozen_model_input.input_tokens[:num_queries] = sampled_tokens.flatten()
+        # print('sampled_tokens.shape', sampled_tokens.shape)
+        # print('frozen_model_input.input_tokens.shape', frozen_model_input.input_tokens.shape)
+        # print('num_seqs', num_seqs)
+        # print('num_queries', num_queries)
+        # num_queries = num_seqs
+        # assert num_seqs == num_queries
+        # if num_seqs != num_queries:
+        #     print('SEARCH')
+        attn_metadata = frozen_model_input.attn_metadata
+        # Update GPU tensors
+        attn_metadata.seq_start_loc = None
+        attn_metadata.query_start_loc = None
+        print('BEFORE KERNEL indptr_buf ', frozen_model_input.attn_metadata.decode_wrapper._paged_kv_indptr_buf)
+        #print data ptr
+        print('buffer.data_ptr', attn_metadata.decode_wrapper._paged_kv_indptr_buf.shape)
+        print('paged_kv_indices.data_ptr', attn_metadata.paged_kv_indices.shape)
+        print('paged_kv_indptr.data_ptr', attn_metadata.paged_kv_indptr.data_ptr())
+        print('paged_kv_last_page_len.data_ptr', attn_metadata.paged_kv_last_page_len.data_ptr())
+        print('block_table_bound.data_ptr', attn_metadata.block_table_bound.data_ptr())
+        print('paged_kv_last_page_len', attn_metadata.paged_kv_last_page_len)
+        print('paged_kv_last_page_len.device', attn_metadata.paged_kv_last_page_len.device)
+        # inp = dict(
+        #     num_seqs=num_seqs,
+        #     num_queries=num_queries,
+        #     block_size=self.block_size,
+        #     input_tokens=frozen_model_input.input_tokens.shape,
+        #     sampled_token_ids=frozen_model_input.input_tokens.shape,
+        #     input_positions=frozen_model_input.input_positions.shape,
+        #     seq_lens=attn_metadata.seq_lens_tensor.shape,
+        #     slot_mapping=attn_metadata.slot_mapping.shape,
+        #     block_tables=attn_metadata.block_tables.shape,
+        #     paged_kv_indices=attn_metadata.paged_kv_indices.shape,
+        #     paged_kv_indptr=attn_metadata.paged_kv_indptr.shape,
+        #     paged_kv_last_page_len=attn_metadata.paged_kv_last_page_len.shape,
+        #     block_table_bound=attn_metadata.block_table_bound.shape)
+        # print(inp)
+
+        # print('first sync')
+        # torch.cuda.synchronize(self.device)
+        # print('after first sync')
+        #print('frozen_model_input.attn_metadata.paged_kv_indptr_cpu', frozen_model_input.attn_metadata.paged_kv_indptr_cpu)
+        print('frozen_model_input.attn_metadata.paged_kv_indptr', frozen_model_input.attn_metadata.paged_kv_indptr)
+        #print('frozen_model_input.attn_metadata.paged_kv_indptr_cpu', frozen_model_input.attn_metadata.paged_kv_indptr_cpu.shape)
+        print('frozen_model_input.attn_metadata.paged_kv_indptr', frozen_model_input.attn_metadata.paged_kv_indptr.shape)
+
+        #print('frozen_model_input.attn_metadata.paged_kv_last_page_len_cpu', frozen_model_input.attn_metadata.paged_kv_last_page_len_cpu)
+        print('frozen_model_input.attn_metadata.paged_kv_last_page_len', frozen_model_input.attn_metadata.paged_kv_last_page_len)
+        #print('frozen_model_input.attn_metadata.paged_kv_last_page_len_cpu', frozen_model_input.attn_metadata.paged_kv_last_page_len_cpu.shape)
+        print('frozen_model_input.attn_metadata.paged_kv_last_page_len', frozen_model_input.attn_metadata.paged_kv_last_page_len.shape)
+        # print('------')
+        ops.advance_step_flashinfer(
+            num_seqs=num_seqs,
+            num_queries=num_queries,
+            block_size=self.block_size,
+            input_tokens=frozen_model_input.input_tokens,
+            sampled_token_ids=frozen_model_input.input_tokens,
+            input_positions=frozen_model_input.input_positions,
+            seq_lens=attn_metadata.seq_lens_tensor,
+            slot_mapping=attn_metadata.slot_mapping,
+            block_tables=attn_metadata.block_tables,
+            # paged_kv_indices=attn_metadata.cached_paged_kv_indices,
+            paged_kv_indices=attn_metadata.paged_kv_indices,
+            paged_kv_indptr=attn_metadata.paged_kv_indptr,
+            paged_kv_last_page_len=attn_metadata.paged_kv_last_page_len,
+            block_table_bound=attn_metadata.block_table_bound)
+        # print('seoncd sync')
+        # torch.cuda.synchronize(self.device)
+        # print('after seoncd sync')
+
+        print('AFTER KERNEL========')
+        print('buffer.data_ptr', attn_metadata.decode_wrapper._paged_kv_indptr_buf.data_ptr())
+        print('paged_kv_indices.data_ptr', attn_metadata.paged_kv_indices.data_ptr())
+        print('paged_kv_indptr.data_ptr', attn_metadata.paged_kv_indptr.data_ptr())
+        print('paged_kv_last_page_len.data_ptr', attn_metadata.paged_kv_last_page_len.data_ptr())
+        print('block_table_bound.data_ptr', attn_metadata.block_table_bound.data_ptr())
+
+        print('dumping tensors')
+        print('paged_kv_indices', attn_metadata.paged_kv_indices)
+        print('paged_kv_indptr', attn_metadata.paged_kv_indptr)
+        print('paged_kv_last_page_len', attn_metadata.paged_kv_last_page_len)
+        print('block_table_bound', attn_metadata.block_table_bound)
+
+        # print('print indptr_buf 4.4', frozen_model_input.attn_metadata.decode_wrapper._paged_kv_indptr_buf)
+
+        #only add 1 to the first query_len of seq_lens
+        # print('seq_lens', frozen_model_input.seq_lens)
+        frozen_model_input.seq_lens[:num_queries] = [x + 1 for x in frozen_model_input.seq_lens[:num_queries]]
+
+        ##bounds = list(map(lambda x: -(x//-self.block_size), frozen_model_input.seq_lens[:num_queries]))
+
+        # we update next step's attn_metadata
+        # frozen_model_input.attn_metadata.paged_kv_indptr_cpu[(idx)%NUM_FLASHINFER_WORKSPACE_BUFFERS][1:] = torch.cumsum(
+        ##frozen_model_input.attn_metadata.paged_kv_indptr_cpu[1:num_queries+1] = torch.cumsum(
+            ##torch.tensor(bounds, device='cpu'), dtype=torch.int, dim=0)
+        ##last_indptr = frozen_model_input.attn_metadata.paged_kv_indptr_cpu[num_queries]
+        ##frozen_model_input.attn_metadata.paged_kv_indptr_cpu[num_queries+1:] = last_indptr
+        # frozen_model_input.attn_metadata.paged_kv_last_page_len_cpu[(idx)%NUM_FLASHINFER_WORKSPACE_BUFFERS].remainder_(self.block_size).add_(1)
+        ##frozen_model_input.attn_metadata.paged_kv_last_page_len_cpu[:num_queries].remainder_(self.block_size).add_(1)
+        # print('print indptr_buf 4.5', frozen_model_input.attn_metadata.decode_wrapper._paged_kv_indptr_buf)
+        # print('frozen_model_input.attn_metadata.paged_kv_indptr_cpu', frozen_model_input.attn_metadata.paged_kv_indptr_cpu)
+        # print('frozen_model_input.attn_metadata.paged_kv_indptr', frozen_model_input.attn_metadata.paged_kv_indptr)
+        # print('frozen_model_input.attn_metadata.paged_kv_indptr_cpu', frozen_model_input.attn_metadata.paged_kv_indptr_cpu.shape)
+        # print('frozen_model_input.attn_metadata.paged_kv_indptr', frozen_model_input.attn_metadata.paged_kv_indptr.shape)
+
+        # print('frozen_model_input.attn_metadata.paged_kv_last_page_len_cpu', frozen_model_input.attn_metadata.paged_kv_last_page_len_cpu)
+        # print('frozen_model_input.attn_metadata.paged_kv_last_page_len', frozen_model_input.attn_metadata.paged_kv_last_page_len)
+        # print('frozen_model_input.attn_metadata.paged_kv_last_page_len_cpu', frozen_model_input.attn_metadata.paged_kv_last_page_len_cpu.shape)
+        # print('frozen_model_input.attn_metadata.paged_kv_last_page_len', frozen_model_input.attn_metadata.paged_kv_last_page_len.shape)
+
+        # new_model_input = self._model_input_cls(
+        #     seq_lens=frozen_model_input.seq_lens,
+        #     input_tokens=frozen_model_input.input_tokens,
+        #     input_positions=frozen_model_input.input_positions,
+        #     attn_metadata=attn_metadata,
+        #     query_lens=frozen_model_input.query_lens,
+        #     lora_mapping=model_input.lora_mapping,
+        #     lora_requests=model_input.lora_requests,
+        #     multi_modal_kwargs=model_input.multi_modal_kwargs,
+        #     sampling_metadata=model_input.sampling_metadata,
+        #     is_prompt=False,
+        # )
+
+        # Ensure we skip CPU samples
+        # assert new_model_input.sampling_metadata.skip_sampler_cpu_output is True
+        # We can reuse sampling tensors since every decode iteration is the same
+        # new_model_input.sampling_metadata.reuse_sampling_tensors = True
+
+        return model_input
+    
+    def _advance_step(self, model_input: StatefulModelInput,
+                      out: SamplerOutput) -> StatefulModelInput:
+        if self.attn_backend.get_name() == "flash-attn":
+            raise ValueError("Flash-attn not implemented")
+            return self._advance_step_flashattn(model_input, out)
+        elif self.attn_backend.get_name() == "flashinfer":
+            return self._advance_step_flashinfer(model_input, out)
+        else:
+            raise ValueError(f"Unsupported attention backend: {self.attn_backend}")
 
     def load_model(self) -> None:
         return self._base_model_runner.load_model()
