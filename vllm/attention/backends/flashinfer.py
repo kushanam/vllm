@@ -306,6 +306,8 @@ class FlashInferMetadata(AttentionMetadata):
             assert self.paged_kv_indices is not None
             assert self.paged_kv_indptr is not None
             assert self.paged_kv_last_page_len is not None
+            assert self.block_table_bound is not None
+            assert self.seq_lens_tensor is not None
             batch_size = self.query_start_loc.shape[0] - 1
             assert batch_size >= 0
             # We will use flash attention for profiling to
@@ -325,7 +327,6 @@ class FlashInferMetadata(AttentionMetadata):
                     self.num_qo_heads, self.num_kv_heads, self.head_dim,
                     self.page_size)
         else:
-            #if not self.use_cuda_graph:
             assert self.paged_kv_indices is not None
             assert self.paged_kv_indptr is not None
             assert self.paged_kv_last_page_len is not None
@@ -333,8 +334,11 @@ class FlashInferMetadata(AttentionMetadata):
             self.paged_kv_indptr = self.paged_kv_indptr.to(self.device)
             self.paged_kv_last_page_len = self.paged_kv_last_page_len.to(
                 self.device)
-            self.block_table_bound = self.block_table_bound.to(self.device)
-            self.seq_lens_tensor = self.seq_lens_tensor.to(self.device)
+            # handle model warmup path
+            if self.block_table_bound is not None:
+                self.block_table_bound = self.block_table_bound.to(self.device)
+            if self.seq_lens_tensor is not None:
+                self.seq_lens_tensor = self.seq_lens_tensor.to(self.device)
 
             assert self.decode_wrapper is not None
             self.decode_wrapper.end_forward()
@@ -524,7 +528,7 @@ class FlashInferMetadataBuilder(AttentionMetadataBuilder[FlashInferMetadata]):
 
         if use_captured_graph:
             self.slot_mapping.extend([PAD_SLOT_ID] * cuda_graph_pad_size)
-            self.block_tables.extend([] for _ in  range(cuda_graph_pad_size))
+            self.block_tables.extend([] * cuda_graph_pad_size)
             num_decode_tokens = batch_size
 
             # The shape of graph_block_tables is
@@ -574,8 +578,8 @@ class FlashInferMetadataBuilder(AttentionMetadataBuilder[FlashInferMetadata]):
         if len(self.paged_kv_indptr) > 0:
             # extend to the maximum number of blocks as returned by the
             # scheduler
-            self.paged_kv_indices.extend([0] *
-                        (self.total_blocks - len(self.paged_kv_indices)))
+            self.paged_kv_indices.extend(
+                [0] * (self.total_blocks - len(self.paged_kv_indices)))
             paged_kv_indices_tensor = torch.tensor(self.paged_kv_indices,
                                                    device="cpu",
                                                    dtype=torch.int)
@@ -584,14 +588,16 @@ class FlashInferMetadataBuilder(AttentionMetadataBuilder[FlashInferMetadata]):
                                                   dtype=torch.int)
             paged_kv_last_page_len_tensor = torch.tensor(
                 self.paged_kv_last_page_len, device="cpu", dtype=torch.int)
-            block_table_bound_tensor = torch.zeros(
-                len(self.paged_kv_indptr) - 1, device="cpu", dtype=torch.int)
+            block_table_bound_tensor = torch.zeros(len(self.paged_kv_indptr) -
+                                                   1,
+                                                   device="cpu",
+                                                   dtype=torch.int)
         else:
             paged_kv_indices_tensor = None
             paged_kv_indptr_tensor = None
             paged_kv_last_page_len_tensor = None
             block_table_bound_tensor = None
-            
+
         kv_cache_dtype = get_kv_cache_torch_dtype(
             self.runner.kv_cache_dtype, self.runner.model_config.dtype)
         return FlashInferMetadata(

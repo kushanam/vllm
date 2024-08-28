@@ -240,7 +240,7 @@ void advance_step_flashinfer(
   if (logging) {
     printf("launching kernel with %d blocks\n", blocks);
   }
-  
+
   // TODO(will): support arbitrary block_tables stride
   if ((blocks * threads) / block_tables.stride(0) < num_queries) {
     TORCH_CHECK(false,
