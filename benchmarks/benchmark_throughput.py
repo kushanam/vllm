@@ -421,6 +421,9 @@ if __name__ == "__main__":
         'section for more information.\n'
         '* "bitsandbytes" will load the weights using bitsandbytes '
         'quantization.\n')
+    parser.add_argument('--max-num-seqs',
+                type=int,
+                help='Extra: The batch size,  basically.')
     parser.add_argument(
         "--disable-async-output-proc",
         action='store_true',
