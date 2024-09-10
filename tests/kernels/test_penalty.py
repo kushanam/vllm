@@ -96,8 +96,8 @@ def test_penalty(
     repetition_penalties = torch.randn(batch_size)
     presence_penalties = torch.randn(batch_size)
     frequency_penalties = torch.randn(batch_size)
-    sequence_lengths = torch.randint(20, 128, batch_size)
-    aggregate_lengths = torch.randint(20, 64, batch_size)
+    sequence_lengths = torch.randint(20, 128, (batch_size,))
+    aggregate_lengths = torch.randint(20, 64, (batch_size,))
     output_ids = torch.randint(1, VOCAB_SIZE, (batch_size, MAX_SEQ_LEN))
 
     ops.batch_apply_penalty(input_logits, output_logits,
